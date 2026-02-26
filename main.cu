@@ -52,7 +52,7 @@ int main() {
     int width = 3328, height = 2464;
     int bit_depth = 10;
     float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-    std::string input_path = "file.raw";
+    std::string input_path = "/content/file.raw";
     size_t img_size = width * height;
     float total_time = 0.0;
 
@@ -147,12 +147,12 @@ int main() {
         cudaMemset(d_i4, 0, img_size * sizeof(float));
     }
 
-    printf("Demosaic Average Execution Time (Custom Kernels): %.3f ms\n", total_time/100.0);
+    printf("Demosaic Average Execution Time: %.3f ms\n", total_time/100.0);
 
     // Copy the output image to CPU memory
     uint8_t* h_out = (uint8_t*)malloc(img_size * 3 * sizeof(uint8_t));
     cudaMemcpy(h_out, d_out_img, img_size * 3 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-    stbi_write_png("demosaic_custom_kernels.png", width, height, 3, h_out, width * 3);
+    stbi_write_png("demosaic.png", width, height, 3, h_out, width * 3);
 
     // Free all CPU and GPU memory
     free(h_raw); free(h_out);
