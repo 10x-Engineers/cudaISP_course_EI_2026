@@ -151,7 +151,7 @@ int main() {
     int width = 3328, height = 2464;
     int bit_depth = 10;
     float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-    std::string input_path = "file.raw";
+    std::string input_path = "/content/file.raw";
     size_t img_size = width * height;
     float total_time = 0.0;
 
@@ -165,7 +165,7 @@ int main() {
     // Device Pointers
     uint16_t *d_raw;
     float *d_mask_r, *d_mask_gr, *d_mask_gb, *d_mask_b, *d_mask_g;
-    float *d_r, *d_g, *d_b, *d_i1, *d_i2, *d_i3;
+    float *d_r, *d_g, *d_b, *d_i1, *d_i2, *d_i3, *d_i4;
     float *df1, *df2, *df3, *df4;
     uint8_t *d_out_img;
     uint16_t* h_raw;
@@ -183,6 +183,7 @@ int main() {
     cudaMalloc(&d_i1, img_size * sizeof(float)); 
     cudaMalloc(&d_i2, img_size * sizeof(float)); 
     cudaMalloc(&d_i3, img_size * sizeof(float));
+    cudaMalloc(&d_i4, img_size * sizeof(float));
     cudaMalloc(&d_out_img, img_size * 3 * sizeof(uint8_t));
     
     cudaMalloc(&df1, 25 * sizeof(float)); 
@@ -228,19 +229,19 @@ int main() {
         maskGbKernel<<<grid, block>>>(d_mask_gb, width, height);
         maskBKernel<<<grid, block>>>(d_mask_b, width, height);
         maskGCombinedKernel<<<grid, block>>>(d_mask_g, width, height);
-         
+          
         multiplyKernel<<<grid, block>>>(d_raw, d_mask_r, d_r, width, height);
         multiplyKernel<<<grid, block>>>(d_raw, d_mask_g, d_g, width, height);
         multiplyKernel<<<grid, block>>>(d_raw, d_mask_b, d_b, width, height);
-        
+
         convolve5x5Kernel<<<grid, block>>>(d_raw, df1, d_i1, width, height);
         whereKernel<<<grid, block>>>(d_mask_r, d_i1, d_g, width, height);
         whereKernel<<<grid, block>>>(d_mask_b, d_i1, d_g, width, height);
-        
+
         convolve5x5Kernel<<<grid, block>>>(d_raw, df2, d_i1, width, height);
         convolve5x5Kernel<<<grid, block>>>(d_raw, df3, d_i2, width, height);
         convolve5x5Kernel<<<grid, block>>>(d_raw, df4, d_i3, width, height);
-        
+
         whereKernel<<<grid, block>>>(d_mask_gr, d_i1, d_r, width, height);
         whereKernel<<<grid, block>>>(d_mask_gb, d_i2, d_r, width, height);
         whereKernel<<<grid, block>>>(d_mask_b, d_i3, d_r, width, height);
@@ -271,20 +272,21 @@ int main() {
         cudaMemset(d_i1, 0, img_size * sizeof(float));
         cudaMemset(d_i2, 0, img_size * sizeof(float));
         cudaMemset(d_i3, 0, img_size * sizeof(float));
+        cudaMemset(d_i4, 0, img_size * sizeof(float));
     }
 
-    printf("Demosaic Average Execution Time (Custom Kernels): %.3f ms\n", total_time/100.0);
+    printf("Demosaic Average Execution Time: %.3f ms\n", total_time/100.0);
 
     // Copy the output image to CPU memory
     uint8_t* h_out = (uint8_t*)malloc(img_size * 3 * sizeof(uint8_t));
     cudaMemcpy(h_out, d_out_img, img_size * 3 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-    stbi_write_png("demosaic_custom_kernels.png", width, height, 3, h_out, width * 3);
+    stbi_write_png("demosaic.png", width, height, 3, h_out, width * 3);
 
     // Free all CPU and GPU memory
     free(h_raw); free(h_out);
     cudaFree(d_raw); cudaFree(d_mask_r); cudaFree(d_mask_gr); cudaFree(d_mask_gb);
     cudaFree(d_mask_b); cudaFree(d_mask_g); cudaFree(d_r); cudaFree(d_g); cudaFree(d_b);
-    cudaFree(d_i1); cudaFree(d_i2); cudaFree(d_i3); cudaFree(d_out_img);
+    cudaFree(d_i1); cudaFree(d_i2); cudaFree(d_i3); cudaFree(d_i4); cudaFree(d_out_img);
     cudaFree(df1); cudaFree(df2); cudaFree(df3); cudaFree(df4);
     cudaEventDestroy(start); cudaEventDestroy(stop);
 

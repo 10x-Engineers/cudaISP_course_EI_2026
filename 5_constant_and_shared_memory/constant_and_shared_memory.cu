@@ -8,6 +8,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+
 // Constant Memory for Filters
 __constant__ float c_f1[25];
 __constant__ float c_f2[25];
@@ -19,10 +20,9 @@ __constant__ float c_f4[25];
 #define RADIUS 2
 #define SHARED_DIM (TILE_SIZE + 2 * RADIUS)
 
-
 // --- MASK KERNELS ---
 
-// Merged Maks Kernel
+// Red mask kernel
 __global__ void generateMasksKernel(float* mask_r, float* mask_gr, float* mask_gb, 
                                     float* mask_b, float* mask_g, int width, int height) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -40,6 +40,7 @@ __global__ void generateMasksKernel(float* mask_r, float* mask_gr, float* mask_g
     }
 }
 
+
 // --- COMPUTATION KERNELS ---
 
 // Normalization Kernel
@@ -51,7 +52,7 @@ __global__ void normalizeKernel(uint16_t* img, int width, int height, int shift_
     }
 }
 
-// Merged Where Kenrel
+// Where Kenrel
 __global__ void mergedWhereKernel(uint16_t* raw, float* m_r, float* m_gr, float* m_gb, float* m_b, float* m_g,
                                   float* i1, float* i2, float* i3, float* i4,
                                   float* out_r, float* out_g, float* out_b, int width, int height) {
@@ -93,7 +94,7 @@ __global__ void applyGainAndSaveKernel(float* r, float* g, float* b, uint8_t* ou
     }
 }
 
-// Merged Convolution kernel (with shared memory)
+// Convolution kernel
 __global__ void mergedConvolveKernel(uint16_t* input, float* i1, float* i2, float* i3, float* i4, int width, int height) {
     __shared__ uint16_t tile[SHARED_DIM][SHARED_DIM];
     
@@ -150,7 +151,7 @@ int main() {
     int width = 3328, height = 2464;
     int bit_depth = 10;
     float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-    std::string input_path = "file.raw";
+    std::string input_path = "/content/file.raw";
     size_t img_size = width * height;
     float total_time = 0.0;
 
@@ -165,6 +166,7 @@ int main() {
     uint16_t *d_raw;
     float *d_mask_r, *d_mask_gr, *d_mask_gb, *d_mask_b, *d_mask_g;
     float *d_r, *d_g, *d_b, *d_i1, *d_i2, *d_i3, *d_i4;
+    float *df1, *df2, *df3, *df4;
     uint8_t *d_out_img;
     uint16_t* h_raw;
 
@@ -184,7 +186,12 @@ int main() {
     cudaMalloc(&d_i4, img_size * sizeof(float));
     cudaMalloc(&d_out_img, img_size * 3 * sizeof(uint8_t));
     
-    // Copy Filters to constant memory
+    cudaMalloc(&df1, 25 * sizeof(float)); 
+    cudaMalloc(&df2, 25 * sizeof(float)); 
+    cudaMalloc(&df3, 25 * sizeof(float)); 
+    cudaMalloc(&df4, 25 * sizeof(float));
+
+    // Copy Filters to GPU memory
     cudaMemcpyToSymbol(c_f1, h_f1, 25 * sizeof(float));
     cudaMemcpyToSymbol(c_f2, h_f2, 25 * sizeof(float));
     cudaMemcpyToSymbol(c_f3, h_f3, 25 * sizeof(float));
@@ -217,13 +224,12 @@ int main() {
 
         normalizeKernel<<<grid, block>>>(d_raw, width, height, 6);
         generateMasksKernel<<<grid, block>>>(d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, width, height);
-        
+
         mergedConvolveKernel<<<grid, block>>>(d_raw, d_i1, d_i2, d_i3, d_i4, width, height);
-        
+
         mergedWhereKernel<<<grid, block>>>(d_raw, d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, 
-                                           d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
+                                          d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
         applyGainAndSaveKernel<<<grid, block>>>(d_r, d_g, d_b, d_out_img, gain, r_gain, b_gain, width, height, bit_depth);
-        
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
 
@@ -248,18 +254,19 @@ int main() {
         cudaMemset(d_i4, 0, img_size * sizeof(float));
     }
 
-    printf("Demosaic Average Execution Time (Constant and Shared Memory): %.3f ms\n", total_time/100.0);
+    printf("Demosaic Average Execution Time: %.3f ms\n", total_time/100.0);
 
     // Copy the output image to CPU memory
     uint8_t* h_out = (uint8_t*)malloc(img_size * 3 * sizeof(uint8_t));
     cudaMemcpy(h_out, d_out_img, img_size * 3 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-    stbi_write_png("demosaic_constant_and_shared_memory_kernels.png", width, height, 3, h_out, width * 3);
+    stbi_write_png("demosaic.png", width, height, 3, h_out, width * 3);
 
     // Free all CPU and GPU memory
     free(h_raw); free(h_out);
     cudaFree(d_raw); cudaFree(d_mask_r); cudaFree(d_mask_gr); cudaFree(d_mask_gb);
     cudaFree(d_mask_b); cudaFree(d_mask_g); cudaFree(d_r); cudaFree(d_g); cudaFree(d_b);
     cudaFree(d_i1); cudaFree(d_i2); cudaFree(d_i3); cudaFree(d_i4); cudaFree(d_out_img);
+    cudaFree(df1); cudaFree(df2); cudaFree(df3); cudaFree(df4);
     cudaEventDestroy(start); cudaEventDestroy(stop);
 
     printf("Completed\n");

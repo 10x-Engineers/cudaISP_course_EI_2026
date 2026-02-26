@@ -10,7 +10,7 @@
 
 // --- MASK KERNELS ---
 
-// Merged Maks Kernel
+// Red mask kernel
 __global__ void generateMasksKernel(float* mask_r, float* mask_gr, float* mask_gb, 
                                     float* mask_b, float* mask_g, int width, int height) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -28,6 +28,7 @@ __global__ void generateMasksKernel(float* mask_r, float* mask_gr, float* mask_g
     }
 }
 
+
 // --- COMPUTATION KERNELS ---
 
 // Normalization Kernel
@@ -39,7 +40,7 @@ __global__ void normalizeKernel(uint16_t* img, int width, int height, int shift_
     }
 }
 
-// Merged Where Kenrel
+// Where Kenrel
 __global__ void mergedWhereKernel(uint16_t* raw, float* m_r, float* m_gr, float* m_gb, float* m_b, float* m_g,
                                   float* i1, float* i2, float* i3, float* i4,
                                   float* out_r, float* out_g, float* out_b, int width, int height) {
@@ -81,7 +82,7 @@ __global__ void applyGainAndSaveKernel(float* r, float* g, float* b, uint8_t* ou
     }
 }
 
-// Merged Convolution kernel
+// Convolution kernel
 __global__ void mergedConvolveKernel(uint16_t* input, float* f1, float* f2, float* f3, float* f4, 
                                      float* i1, float* i2, float* i3, float* i4, int width, int height) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
@@ -125,7 +126,7 @@ int main() {
     int width = 3328, height = 2464;
     int bit_depth = 10;
     float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-    std::string input_path = "file.raw";
+    std::string input_path = "/content/file.raw";
     size_t img_size = width * height;
     float total_time = 0.0;
 
@@ -198,13 +199,12 @@ int main() {
 
         normalizeKernel<<<grid, block>>>(d_raw, width, height, 6);
         generateMasksKernel<<<grid, block>>>(d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, width, height);
-        
+
         mergedConvolveKernel<<<grid, block>>>(d_raw, df1, df2, df3, df4, d_i1, d_i2, d_i3, d_i4, width, height);
-        
+
         mergedWhereKernel<<<grid, block>>>(d_raw, d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, 
-                                           d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
+                                          d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
         applyGainAndSaveKernel<<<grid, block>>>(d_r, d_g, d_b, d_out_img, gain, r_gain, b_gain, width, height, bit_depth);
-        
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
 
@@ -229,12 +229,12 @@ int main() {
         cudaMemset(d_i4, 0, img_size * sizeof(float));
     }
 
-    printf("Demosaic Average Execution Time (Merged Kernels): %.3f ms\n", total_time/100.0);
+    printf("Demosaic Average Execution Time: %.3f ms\n", total_time/100.0);
 
     // Copy the output image to CPU memory
     uint8_t* h_out = (uint8_t*)malloc(img_size * 3 * sizeof(uint8_t));
     cudaMemcpy(h_out, d_out_img, img_size * 3 * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-    stbi_write_png("demosaic_merged_kernels.png", width, height, 3, h_out, width * 3);
+    stbi_write_png("demosaic.png", width, height, 3, h_out, width * 3);
 
     // Free all CPU and GPU memory
     free(h_raw); free(h_out);

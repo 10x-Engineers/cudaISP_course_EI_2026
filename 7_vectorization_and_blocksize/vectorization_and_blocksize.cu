@@ -4,10 +4,10 @@
 #include <cuda_runtime.h>
 #include <vector>
 #include <string>
-#include <cmath>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+
 
 // Constant Memory for Filters
 __constant__ float c_f1[25];
@@ -20,10 +20,9 @@ __constant__ float c_f4[25];
 #define RADIUS 2
 #define SHARED_DIM (TILE_SIZE + 2 * RADIUS)
 
+
 // --- COMPUTATION KERNELS ---
 
-// Hard-coded convolution helpers using shared memory tile
-// Hard-coded convolution helpers using shared memory tile (single expression)
 __device__ float convolve_f1(float tile[SHARED_DIM][SHARED_DIM], int ty, int tx) {
     return tile[ty + 0][tx + 2] * -0.125f 
          + tile[ty + 1][tx + 2] * 0.25f
@@ -160,13 +159,12 @@ int main() {
     // Initializing parameters
     int width = 3328, height = 2464;
     int bit_depth = 10;
-    int shift_bits = 6; // Shift to get 10-bit values from 16-bit input
     float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-    std::string input_path = "file.raw";
+    std::string input_path = "/content/file.raw";
     size_t img_size = width * height;
     float total_time = 0.0;
 
-    // Filter Definitions (still needed for constant memory even though we're using hard-coded helpers)
+    // Filter Definitions
     float h_f1[25] = {0,0,-0.125,0,0, 0,0,0.25,0,0, -0.125,0.25,0.5,0.25,-0.125, 0,0,0.25,0,0, 0,0,-0.125,0,0};
     float h_f2[25] = {0,0,0.0625,0,0, 0,-0.125,0,-0.125,0, -0.125,0.5,0.625,0.5,-0.125, 0,-0.125,0,-0.125,0, 0,0,0.0625,0,0};
     float h_f3[25]; 
@@ -175,14 +173,34 @@ int main() {
 
     // Device Pointers
     uint16_t *d_raw;
-    uchar3 *d_out_img; // Using uchar3 for vectorized store
+    float *d_mask_r, *d_mask_gr, *d_mask_gb, *d_mask_b, *d_mask_g;
+    float *d_r, *d_g, *d_b, *d_i1, *d_i2, *d_i3, *d_i4;
+    float *df1, *df2, *df3, *df4;
+    uchar3 *d_out_img;
     uint16_t* h_raw;
 
     // Initializing memory on GPU
     cudaMalloc(&d_raw, img_size * sizeof(uint16_t));
+    cudaMalloc(&d_mask_r, img_size * sizeof(float)); 
+    cudaMalloc(&d_mask_gr, img_size * sizeof(float));
+    cudaMalloc(&d_mask_gb, img_size * sizeof(float)); 
+    cudaMalloc(&d_mask_b, img_size * sizeof(float));
+    cudaMalloc(&d_mask_g, img_size * sizeof(float));
+    cudaMalloc(&d_r, img_size * sizeof(float)); 
+    cudaMalloc(&d_g, img_size * sizeof(float)); 
+    cudaMalloc(&d_b, img_size * sizeof(float));
+    cudaMalloc(&d_i1, img_size * sizeof(float)); 
+    cudaMalloc(&d_i2, img_size * sizeof(float)); 
+    cudaMalloc(&d_i3, img_size * sizeof(float));
+    cudaMalloc(&d_i4, img_size * sizeof(float));
     cudaMalloc(&d_out_img, img_size * sizeof(uchar3));
+    
+    cudaMalloc(&df1, 25 * sizeof(float)); 
+    cudaMalloc(&df2, 25 * sizeof(float)); 
+    cudaMalloc(&df3, 25 * sizeof(float)); 
+    cudaMalloc(&df4, 25 * sizeof(float));
 
-    // Copy Filters to constant memory (optional - not used in kernel but kept for consistency)
+    // Copy Filters to GPU memory
     cudaMemcpyToSymbol(c_f1, h_f1, 25 * sizeof(float));
     cudaMemcpyToSymbol(c_f2, h_f2, 25 * sizeof(float));
     cudaMemcpyToSymbol(c_f3, h_f3, 25 * sizeof(float));
@@ -195,12 +213,11 @@ int main() {
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-
-    // Pre-compute inverse max value for normalization
-    float max_val_inv = 255.0f / (float)((1 << bit_depth) - 1);
     
+    float max_val_inv = 255.0f / (float)((1 << bit_depth) - 1);
+
     // Benchmarking
-    for (int i = 0; i < 100; i++)
+    for (int i = 0; i<100; i++)
     {
         printf("Executing demosaic, run number %d\n", i+1);
             
@@ -215,8 +232,10 @@ int main() {
         cudaEventRecord(start);
 
         // --- CALL THE CUDA KERNELS ---
-        mergedConvolveKernel<<<grid, block>>>(d_raw, d_out_img, width, height, shift_bits, max_val_inv, gain, r_gain, b_gain);
-        
+
+        mergedConvolveKernel<<<grid, block>>>(d_raw, d_out_img, width, height, 6, max_val_inv, gain, r_gain, b_gain);
+
+
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
 
@@ -225,26 +244,36 @@ int main() {
         cudaEventElapsedTime(&ms, start, stop);
         total_time += ms;
 
-        // Reset the output GPU memory
-        if (i < 99) {
-            cudaMemset(d_out_img, 0, img_size * sizeof(uchar3));
-        }
+        // Reset the GPu memory
+        cudaMemset(d_raw, 0, img_size * sizeof(uint16_t));
+        cudaMemset(d_mask_r, 0, img_size * sizeof(float));
+        cudaMemset(d_mask_gr, 0, img_size * sizeof(float));
+        cudaMemset(d_mask_gb, 0, img_size * sizeof(float));
+        cudaMemset(d_mask_b, 0, img_size * sizeof(float));
+        cudaMemset(d_mask_g, 0, img_size * sizeof(float));
+        cudaMemset(d_r, 0, img_size * sizeof(float));
+        cudaMemset(d_g, 0, img_size * sizeof(float));
+        cudaMemset(d_b, 0, img_size * sizeof(float));
+        cudaMemset(d_i1, 0, img_size * sizeof(float));
+        cudaMemset(d_i2, 0, img_size * sizeof(float));
+        cudaMemset(d_i3, 0, img_size * sizeof(float));
+        cudaMemset(d_i4, 0, img_size * sizeof(float));
     }
 
-    printf("Demosaic Average Execution Time (Vectorization and Blocksize): %.3f ms\n", total_time/100.0);
+    printf("Demosaic Average Execution Time: %.3f ms\n", total_time/100.0);
 
     // Copy the output image to CPU memory
     uint8_t* h_out = (uint8_t*)malloc(img_size * 3 * sizeof(uint8_t));
     cudaMemcpy(h_out, d_out_img, img_size * sizeof(uchar3), cudaMemcpyDeviceToHost);
-    stbi_write_png("vectorization_and_blocksize.png", width, height, 3, h_out, width * 3);
+    stbi_write_png("demosaic.png", width, height, 3, h_out, width * 3);
 
     // Free all CPU and GPU memory
-    free(h_raw); 
-    free(h_out);
-    cudaFree(d_raw);
-    cudaFree(d_out_img);
-    cudaEventDestroy(start); 
-    cudaEventDestroy(stop);
+    free(h_raw); free(h_out);
+    cudaFree(d_raw); cudaFree(d_mask_r); cudaFree(d_mask_gr); cudaFree(d_mask_gb);
+    cudaFree(d_mask_b); cudaFree(d_mask_g); cudaFree(d_r); cudaFree(d_g); cudaFree(d_b);
+    cudaFree(d_i1); cudaFree(d_i2); cudaFree(d_i3); cudaFree(d_i4); cudaFree(d_out_img);
+    cudaFree(df1); cudaFree(df2); cudaFree(df3); cudaFree(df4);
+    cudaEventDestroy(start); cudaEventDestroy(stop);
 
     printf("Completed\n");
     return 0;
