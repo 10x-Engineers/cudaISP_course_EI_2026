@@ -65,12 +65,73 @@ __global__ void multiplyKernel(uint16_t* raw, float* mask, float* output, int wi
     }
 }
 
+// Hard-coded convolution helpers using shared memory tile
+__device__ float convolve_f1(uint16_t tile[SHARED_DIM][SHARED_DIM], int ty, int tx) {
+    float sum = 0.0f;
+    sum += (float)tile[ty + 0][tx + 2] * -0.125f; 
+    sum += (float)tile[ty + 1][tx + 2] * 0.25f;
+    sum += (float)tile[ty + 2][tx + 0] * -0.125f; 
+    sum += (float)tile[ty + 2][tx + 1] * 0.25f;
+    sum += (float)tile[ty + 2][tx + 2] * 0.5f;   
+    sum += (float)tile[ty + 2][tx + 3] * 0.25f;
+    sum += (float)tile[ty + 2][tx + 4] * -0.125f; 
+    sum += (float)tile[ty + 3][tx + 2] * 0.25f;
+    sum += (float)tile[ty + 4][tx + 2] * -0.125f;
+    return sum;
+}
+
+__device__ float convolve_f2(uint16_t tile[SHARED_DIM][SHARED_DIM], int ty, int tx) {
+    float sum = 0.0f;
+    sum += (float)tile[ty + 0][tx + 2] * 0.0625f; 
+    sum += (float)tile[ty + 1][tx + 1] * -0.125f;
+    sum += (float)tile[ty + 1][tx + 3] * -0.125f; 
+    sum += (float)tile[ty + 2][tx + 0] * -0.125f;
+    sum += (float)tile[ty + 2][tx + 1] * 0.5f;    
+    sum += (float)tile[ty + 2][tx + 2] * 0.625f;
+    sum += (float)tile[ty + 2][tx + 3] * 0.5f;    
+    sum += (float)tile[ty + 2][tx + 4] * -0.125f;
+    sum += (float)tile[ty + 3][tx + 1] * -0.125f; 
+    sum += (float)tile[ty + 3][tx + 3] * -0.125f;
+    sum += (float)tile[ty + 4][tx + 2] * 0.0625f;
+    return sum;
+}
+
+__device__ float convolve_f3(uint16_t tile[SHARED_DIM][SHARED_DIM], int ty, int tx) {
+    float sum = 0.0f;
+    sum += (float)tile[ty + 2][tx + 0] * 0.0625f; 
+    sum += (float)tile[ty + 1][tx + 1] * -0.125f;
+    sum += (float)tile[ty + 3][tx + 1] * -0.125f; 
+    sum += (float)tile[ty + 0][tx + 2] * -0.125f;
+    sum += (float)tile[ty + 1][tx + 2] * 0.5f;    
+    sum += (float)tile[ty + 2][tx + 2] * 0.625f;
+    sum += (float)tile[ty + 3][tx + 2] * 0.5f;    
+    sum += (float)tile[ty + 4][tx + 2] * -0.125f;
+    sum += (float)tile[ty + 1][tx + 3] * -0.125f; 
+    sum += (float)tile[ty + 3][tx + 3] * -0.125f;
+    sum += (float)tile[ty + 2][tx + 4] * 0.0625f;
+    return sum;
+}
+
+__device__ float convolve_f4(uint16_t tile[SHARED_DIM][SHARED_DIM], int ty, int tx) {
+    float sum = 0.0f;
+    sum += (float)tile[ty + 0][tx + 2] * -0.1875f; 
+    sum += (float)tile[ty + 1][tx + 1] * 0.25f;
+    sum += (float)tile[ty + 1][tx + 3] * 0.25f;    
+    sum += (float)tile[ty + 2][tx + 0] * -0.1875f;
+    sum += (float)tile[ty + 2][tx + 2] * 0.75f;    
+    sum += (float)tile[ty + 2][tx + 4] * -0.1875f;
+    sum += (float)tile[ty + 3][tx + 1] * 0.25f;    
+    sum += (float)tile[ty + 3][tx + 3] * 0.25f;
+    sum += (float)tile[ty + 4][tx + 2] * -0.1875f;
+    return sum;
+}
+
 // 8. Convolution kernel
         // g_interp = correlate2d(raw_in, self.g_at_r_and_b, **conv_params)
         // rb_at_g_rbbr = correlate2d(raw_in, self.r_at_gr_and_b_at_gb, **conv_params)
         // rb_at_g_brrb = correlate2d(raw_in, self.r_at_gb_and_b_at_gr, **conv_params)
         // rb_at_gr_bbrr = correlate2d(raw_in, self.r_at_b_and_b_at_r, **conv_params)
-__global__ void mergedConvolveKernel(uint16_t* input, float* i1, float* i2, float* i3, float* i4, int width, int height) {
+__global__ void mergedConvolveKernel(uint16_t* input, float* out_r, float* out_g, float* out_b, int width, int height) {
     __shared__ uint16_t tile[SHARED_DIM][SHARED_DIM];
     
     int tx = threadIdx.x;
@@ -93,18 +154,40 @@ __global__ void mergedConvolveKernel(uint16_t* input, float* i1, float* i2, floa
     __syncthreads();
     
     if (col < width && row < height) {
-        float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 5; j++) {
-                float val = (float)tile[ty + i][tx + j];
-                sum1 += val * c_f1[i * 5 + j]; 
-                sum2 += val * c_f2[i * 5 + j];
-                sum3 += val * c_f3[i * 5 + j]; 
-                sum4 += val * c_f4[i * 5 + j];
-            }
+        float res_r, res_g, res_b;
+        float center = (float)tile[ty + RADIUS][tx + RADIUS];
+        bool isEvenRow = (row % 2 == 0);
+        bool isEvenCol = (col % 2 == 0);
+
+        if (isEvenRow && isEvenCol) { 
+            // Red pixel
+            res_r = center; 
+            res_g = convolve_f1(tile, ty, tx); 
+            res_b = convolve_f4(tile, ty, tx); 
+        } 
+        else if (isEvenRow && !isEvenCol) { 
+            // Green (red row) pixel
+            res_r = convolve_f2(tile, ty, tx); 
+            res_g = center; 
+            res_b = convolve_f3(tile, ty, tx); 
+        } 
+        else if (!isEvenRow && isEvenCol) { 
+            // Green (blue row) pixel
+            res_r = convolve_f3(tile, ty, tx); 
+            res_g = center; 
+            res_b = convolve_f2(tile, ty, tx); 
+        } 
+        else { 
+            // Blue pixel
+            res_r = convolve_f4(tile, ty, tx); 
+            res_g = convolve_f1(tile, ty, tx); 
+            res_b = center; 
         }
+
         int idx = row * width + col;
-        i1[idx] = sum1; i2[idx] = sum2; i3[idx] = sum3; i4[idx] = sum4;
+        out_r[idx] = res_r; 
+        out_g[idx] = res_g; 
+        out_b[idx] = res_b;
     }
 }
 
@@ -260,12 +343,7 @@ int main() {
         normalizeKernel<<<grid, block>>>(d_raw, width, height, 6);
 
         // 9.2 Demosaic The Image
-        generateMasksKernel<<<grid, block>>>(d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, width, height);
-
-        mergedConvolveKernel<<<grid, block>>>(d_raw, d_i1, d_i2, d_i3, d_i4, width, height);
-
-        mergedWhereKernel<<<grid, block>>>(d_raw, d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, 
-                                          d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
+        mergedConvolveKernel<<<grid, block>>>(d_raw, d_r, d_g, d_b, width, height);
 
         // 9.3 Apply Gains And Clip
         applyGainAndSaveKernel<<<grid, block>>>(d_r, d_g, d_b, d_out_img, gain, r_gain, b_gain, width, height, bit_depth);
