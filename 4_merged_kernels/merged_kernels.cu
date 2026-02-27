@@ -158,7 +158,7 @@ int main() {
    int width = 3328, height = 2464;
    int bit_depth = 10;
    float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-   std::string input_path = "content/file.raw";
+   std::string input_path = "/content/file.raw";
    size_t img_size = width * height;
    float total_time = 0.0;
 
