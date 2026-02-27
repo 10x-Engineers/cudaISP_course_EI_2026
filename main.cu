@@ -11,6 +11,17 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+// Constant Memory for Filters
+__constant__ float c_f1[25];
+__constant__ float c_f2[25];
+__constant__ float c_f3[25];
+__constant__ float c_f4[25];
+
+// Shared Memory Constants
+#define TILE_SIZE 16
+#define RADIUS 2
+#define SHARED_DIM (TILE_SIZE + 2 * RADIUS)
+
 // Define All GPU Kernels
 
 // Generate Mask Kernels
@@ -59,24 +70,37 @@ __global__ void multiplyKernel(uint16_t* raw, float* mask, float* output, int wi
         // rb_at_g_rbbr = correlate2d(raw_in, self.r_at_gr_and_b_at_gb, **conv_params)
         // rb_at_g_brrb = correlate2d(raw_in, self.r_at_gb_and_b_at_gr, **conv_params)
         // rb_at_gr_bbrr = correlate2d(raw_in, self.r_at_b_and_b_at_r, **conv_params)
-__global__ void mergedConvolveKernel(uint16_t* input, float* f1, float* f2, float* f3, float* f4, 
-                                     float* i1, float* i2, float* i3, float* i4, int width, int height) {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
+__global__ void mergedConvolveKernel(uint16_t* input, float* i1, float* i2, float* i3, float* i4, int width, int height) {
+    __shared__ uint16_t tile[SHARED_DIM][SHARED_DIM];
+    
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int col = blockIdx.x * TILE_SIZE + tx;
+    int row = blockIdx.y * TILE_SIZE + ty;
+    
+    // Load data into shared memory with halo
+    for (int i = ty; i < SHARED_DIM; i += TILE_SIZE) {
+        for (int j = tx; j < SHARED_DIM; j += TILE_SIZE) {
+            int load_row = blockIdx.y * TILE_SIZE + i - RADIUS;
+            int load_col = blockIdx.x * TILE_SIZE + j - RADIUS;
+            if (load_row >= 0 && load_row < height && load_col >= 0 && load_col < width) {
+                tile[i][j] = input[load_row * width + load_col];
+            } else {
+                tile[i][j] = 0;
+            }
+        }
+    }
+    __syncthreads();
+    
     if (col < width && row < height) {
         float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
         for (int i = 0; i < 5; i++) {
             for (int j = 0; j < 5; j++) {
-                int cur_row = row + (i - 2);
-                int cur_col = col + (j - 2);
-                if (cur_row >= 0 && cur_row < height && cur_col >= 0 && cur_col < width) {
-                    float val = (float)input[cur_row * width + cur_col];
-                    int f_idx = i * 5 + j;
-                    sum1 += val * f1[f_idx]; 
-                    sum2 += val * f2[f_idx];
-                    sum3 += val * f3[f_idx]; 
-                    sum4 += val * f4[f_idx];
-                }
+                float val = (float)tile[ty + i][tx + j];
+                sum1 += val * c_f1[i * 5 + j]; 
+                sum2 += val * c_f2[i * 5 + j];
+                sum3 += val * c_f3[i * 5 + j]; 
+                sum4 += val * c_f4[i * 5 + j];
             }
         }
         int idx = row * width + col;
@@ -204,10 +228,10 @@ int main() {
 
     // 5. Copy Convolutional Filters to GPU Memory Defined In Step 2
    
-   cudaMemcpy(df1, h_f1, 25 * sizeof(float), cudaMemcpyHostToDevice);
-   cudaMemcpy(df2, h_f2, 25 * sizeof(float), cudaMemcpyHostToDevice);
-   cudaMemcpy(df3, h_f3, 25 * sizeof(float), cudaMemcpyHostToDevice);
-   cudaMemcpy(df4, h_f4, 25 * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpyToSymbol(c_f1, h_f1, 25 * sizeof(float));
+    cudaMemcpyToSymbol(c_f2, h_f2, 25 * sizeof(float));
+    cudaMemcpyToSymbol(c_f3, h_f3, 25 * sizeof(float));
+    cudaMemcpyToSymbol(c_f4, h_f4, 25 * sizeof(float));
     
     // 6. Load The Raw Image on Host
    h_raw = load_raw_to_host(input_path, width, height);
@@ -238,7 +262,7 @@ int main() {
         // 9.2 Demosaic The Image
         generateMasksKernel<<<grid, block>>>(d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, width, height);
 
-        mergedConvolveKernel<<<grid, block>>>(d_raw, df1, df2, df3, df4, d_i1, d_i2, d_i3, d_i4, width, height);
+        mergedConvolveKernel<<<grid, block>>>(d_raw, d_i1, d_i2, d_i3, d_i4, width, height);
 
         mergedWhereKernel<<<grid, block>>>(d_raw, d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, 
                                           d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
