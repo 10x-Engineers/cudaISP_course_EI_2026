@@ -15,32 +15,103 @@
 
 // 1. Red mask kernel
         // mask_r[0::2, 0::2] = True
+__global__ void maskRKernel(float* mask, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        mask[row * width + col] = (row % 2 == 0 && col % 2 == 0) ? 1.0f : 0.0f;
+    }
+}
 
 // 2. Green in red rows mask Kernel
         // mask_gr[0::2, 1::2] = True
+__global__ void maskGrKernel(float* mask, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        mask[row * width + col] = (row % 2 == 0 && col % 2 != 0) ? 1.0f : 0.0f;
+    }
+}
 
 // 3. Green in blue rows mask kernel
         // mask_gb[1::2, 0::2] = True
+__global__ void maskGbKernel(float* mask, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        mask[row * width + col] = (row % 2 != 0 && col % 2 == 0) ? 1.0f : 0.0f;
+    }
+}
 
 // 4. Blue mask kernel
         // mask_b[1::2, 1::2] = True
+__global__ void maskBKernel(float* mask, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        mask[row * width + col] = (row % 2 != 0 && col % 2 != 0) ? 1.0f : 0.0f;
+    }
+}
 
 // 5. Green Mask kernel
         // mask_g = mask_gr | mask_gb
+__global__ void maskGCombinedKernel(float* mask, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        bool isGr = (row % 2 == 0 && col % 2 != 0);
+        bool isGb = (row % 2 != 0 && col % 2 == 0);
+        mask[row * width + col] = (isGr || isGb) ? 1.0f : 0.0f;
+    }
+}
 
 // 6. Normalize Image Kernel
         // raw_shifted = np.right_shift(self.img, self.shift_bits)
+__global__ void normalizeKernel(uint16_t* img, int width, int height, int shift_bits) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        img[row * width + col] >>= shift_bits;
+    }
+}
 
 // 7. Multiply Kernel
         // r_channel = raw_in * mask_r
         // g_channel = raw_in * mask_g
         // b_channel = raw_in * mask_b
+__global__ void multiplyKernel(uint16_t* raw, float* mask, float* output, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        int idx = row * width + col;
+        output[idx] = (float)raw[idx] * mask[idx];
+    }
+}
 
 // 8. Convolution kernel
         // g_interp = correlate2d(raw_in, self.g_at_r_and_b, **conv_params)
         // rb_at_g_rbbr = correlate2d(raw_in, self.r_at_gr_and_b_at_gb, **conv_params)
         // rb_at_g_brrb = correlate2d(raw_in, self.r_at_gb_and_b_at_gr, **conv_params)
         // rb_at_gr_bbrr = correlate2d(raw_in, self.r_at_b_and_b_at_r, **conv_params)
+__global__ void convolve5x5Kernel(uint16_t* input, float* filter, float* output, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (col < width && row < height) {
+        float sum = 0.0f;
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 5; j++) {
+                int cur_row = row + (i - 2);
+                int cur_col = col + (j - 2);
+                
+                if (cur_row >= 0 && cur_row < height && cur_col >= 0 && cur_col < width) {
+                    sum += (float)input[cur_row * width + cur_col] * filter[i * 5 + j];
+                }
+            }
+        }
+        output[row * width + col] = sum;
+    }
+}
 
 // 9. np.where Kenrel
         // g_channel = np.where(mask_r, g_interp, g_channel)
@@ -51,6 +122,16 @@
         // b_channel = np.where(mask_gb, rb_at_g_rbbr, b_channel)
         // b_channel = np.where(mask_gr, rb_at_g_brrb, b_channel)
         // b_channel = np.where(mask_r, rb_at_gr_bbrr, b_channel)
+__global__ void whereKernel(float* mask, float* interp, float* channel, int width, int height) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        int idx = row * width + col;
+        if (mask[idx] > 0.0f) {
+            channel[idx] = interp[idx];
+        }
+    }
+}
 
 // 10. Gains and Clip Kernel
         // demos_out[:, :, 0] = r_channel * self.gain * self.r_gain
@@ -59,6 +140,25 @@
         // max_val = 2**self.bit_depth - 1
         // demos_out = (demos_out / max_val) * 255
         // demos_out = np.clip(demos_out, 0, 255)
+__global__ void applyGainAndSaveKernel(float* r, float* g, float* b, uint8_t* output, 
+                                       float gain, float r_gain, float b_gain, 
+                                       int width, int height, int bit_depth) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (col < width && row < height) {
+        int idx = row * width + col;
+        float max_val = (float)((1 << bit_depth) - 1);
+
+        float pr = fminf(fmaxf(r[idx] * gain * r_gain, 0.0f), max_val);
+        float pg = fminf(fmaxf(g[idx] * gain, 0.0f), max_val);
+        float pb = fminf(fmaxf(b[idx] * gain * b_gain, 0.0f), max_val);
+
+        output[idx * 3 + 0] = (uint8_t)((pr / max_val) * 255.0f);
+        output[idx * 3 + 1] = (uint8_t)((pg / max_val) * 255.0f);
+        output[idx * 3 + 2] = (uint8_t)((pb / max_val) * 255.0f);
+    }
+}
 
 
 // Load/Read Raw Bayer Image From Disk To Memory
@@ -152,11 +252,37 @@ int main() {
        cudaEventRecord(start);
         // 9. Call The Cuda Kernels We Initialized Above
 
-            // 9.1 Normalize The Image
+        // 9.1 Normalize The Image
+        normalizeKernel<<<grid, block>>>(d_raw, width, height, 6);
 
-            // 9.2 Demosaic The Image
+        // 9.2 Demosaic The Image
+        maskRKernel<<<grid, block>>>(d_mask_r, width, height);
+        maskGrKernel<<<grid, block>>>(d_mask_gr, width, height);
+        maskGbKernel<<<grid, block>>>(d_mask_gb, width, height);
+        maskBKernel<<<grid, block>>>(d_mask_b, width, height);
+        maskGCombinedKernel<<<grid, block>>>(d_mask_g, width, height);
+          
+        multiplyKernel<<<grid, block>>>(d_raw, d_mask_r, d_r, width, height);
+        multiplyKernel<<<grid, block>>>(d_raw, d_mask_g, d_g, width, height);
+        multiplyKernel<<<grid, block>>>(d_raw, d_mask_b, d_b, width, height);
 
-            // 9.3 Apply Gains And Clip
+        convolve5x5Kernel<<<grid, block>>>(d_raw, df1, d_i1, width, height);
+        whereKernel<<<grid, block>>>(d_mask_r, d_i1, d_g, width, height);
+        whereKernel<<<grid, block>>>(d_mask_b, d_i1, d_g, width, height);
+
+        convolve5x5Kernel<<<grid, block>>>(d_raw, df2, d_i1, width, height);
+        convolve5x5Kernel<<<grid, block>>>(d_raw, df3, d_i2, width, height);
+        convolve5x5Kernel<<<grid, block>>>(d_raw, df4, d_i3, width, height);
+
+        whereKernel<<<grid, block>>>(d_mask_gr, d_i1, d_r, width, height);
+        whereKernel<<<grid, block>>>(d_mask_gb, d_i2, d_r, width, height);
+        whereKernel<<<grid, block>>>(d_mask_b, d_i3, d_r, width, height);
+        whereKernel<<<grid, block>>>(d_mask_gb, d_i1, d_b, width, height);
+        whereKernel<<<grid, block>>>(d_mask_gr, d_i2, d_b, width, height);
+        whereKernel<<<grid, block>>>(d_mask_r, d_i3, d_b, width, height);
+
+        // 9.3 Apply Gains And Clip
+        applyGainAndSaveKernel<<<grid, block>>>(d_r, d_g, d_b, d_out_img, gain, r_gain, b_gain, width, height, bit_depth);
 
         // Stop Measuring Execution Time
        cudaEventRecord(stop);
