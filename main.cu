@@ -13,55 +13,21 @@
 
 // Define All GPU Kernels
 
-// 1. Red mask kernel
-        // mask_r[0::2, 0::2] = True
-__global__ void maskRKernel(float* mask, int width, int height) {
+// Generate Mask Kernels
+__global__ void generateMasksKernel(float* mask_r, float* mask_gr, float* mask_gb, 
+                                    float* mask_b, float* mask_g, int width, int height) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     if (col < width && row < height) {
-        mask[row * width + col] = (row % 2 == 0 && col % 2 == 0) ? 1.0f : 0.0f;
-    }
-}
-
-// 2. Green in red rows mask Kernel
-        // mask_gr[0::2, 1::2] = True
-__global__ void maskGrKernel(float* mask, int width, int height) {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (col < width && row < height) {
-        mask[row * width + col] = (row % 2 == 0 && col % 2 != 0) ? 1.0f : 0.0f;
-    }
-}
-
-// 3. Green in blue rows mask kernel
-        // mask_gb[1::2, 0::2] = True
-__global__ void maskGbKernel(float* mask, int width, int height) {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (col < width && row < height) {
-        mask[row * width + col] = (row % 2 != 0 && col % 2 == 0) ? 1.0f : 0.0f;
-    }
-}
-
-// 4. Blue mask kernel
-        // mask_b[1::2, 1::2] = True
-__global__ void maskBKernel(float* mask, int width, int height) {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (col < width && row < height) {
-        mask[row * width + col] = (row % 2 != 0 && col % 2 != 0) ? 1.0f : 0.0f;
-    }
-}
-
-// 5. Green Mask kernel
-        // mask_g = mask_gr | mask_gb
-__global__ void maskGCombinedKernel(float* mask, int width, int height) {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (col < width && row < height) {
-        bool isGr = (row % 2 == 0 && col % 2 != 0);
-        bool isGb = (row % 2 != 0 && col % 2 == 0);
-        mask[row * width + col] = (isGr || isGb) ? 1.0f : 0.0f;
+        int idx = row * width + col;
+        bool isEvenRow = (row % 2 == 0);
+        bool isEvenCol = (col % 2 == 0);
+        float r = (isEvenRow && isEvenCol) ? 1.0f : 0.0f;
+        float gr = (isEvenRow && !isEvenCol) ? 1.0f : 0.0f;
+        float gb = (!isEvenRow && isEvenCol) ? 1.0f : 0.0f;
+        float b = (!isEvenRow && !isEvenCol) ? 1.0f : 0.0f;
+        mask_r[idx] = r; mask_gr[idx] = gr; mask_gb[idx] = gb; mask_b[idx] = b;
+        mask_g[idx] = (gr || gb) ? 1.0f : 0.0f;
     }
 }
 
@@ -93,23 +59,28 @@ __global__ void multiplyKernel(uint16_t* raw, float* mask, float* output, int wi
         // rb_at_g_rbbr = correlate2d(raw_in, self.r_at_gr_and_b_at_gb, **conv_params)
         // rb_at_g_brrb = correlate2d(raw_in, self.r_at_gb_and_b_at_gr, **conv_params)
         // rb_at_gr_bbrr = correlate2d(raw_in, self.r_at_b_and_b_at_r, **conv_params)
-__global__ void convolve5x5Kernel(uint16_t* input, float* filter, float* output, int width, int height) {
+__global__ void mergedConvolveKernel(uint16_t* input, float* f1, float* f2, float* f3, float* f4, 
+                                     float* i1, float* i2, float* i3, float* i4, int width, int height) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
-
     if (col < width && row < height) {
-        float sum = 0.0f;
+        float sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
         for (int i = 0; i < 5; i++) {
             for (int j = 0; j < 5; j++) {
                 int cur_row = row + (i - 2);
                 int cur_col = col + (j - 2);
-                
                 if (cur_row >= 0 && cur_row < height && cur_col >= 0 && cur_col < width) {
-                    sum += (float)input[cur_row * width + cur_col] * filter[i * 5 + j];
+                    float val = (float)input[cur_row * width + cur_col];
+                    int f_idx = i * 5 + j;
+                    sum1 += val * f1[f_idx]; 
+                    sum2 += val * f2[f_idx];
+                    sum3 += val * f3[f_idx]; 
+                    sum4 += val * f4[f_idx];
                 }
             }
         }
-        output[row * width + col] = sum;
+        int idx = row * width + col;
+        i1[idx] = sum1; i2[idx] = sum2; i3[idx] = sum3; i4[idx] = sum4;
     }
 }
 
@@ -122,14 +93,23 @@ __global__ void convolve5x5Kernel(uint16_t* input, float* filter, float* output,
         // b_channel = np.where(mask_gb, rb_at_g_rbbr, b_channel)
         // b_channel = np.where(mask_gr, rb_at_g_brrb, b_channel)
         // b_channel = np.where(mask_r, rb_at_gr_bbrr, b_channel)
-__global__ void whereKernel(float* mask, float* interp, float* channel, int width, int height) {
+__global__ void mergedWhereKernel(uint16_t* raw, float* m_r, float* m_gr, float* m_gb, float* m_b, float* m_g,
+                                  float* i1, float* i2, float* i3, float* i4,
+                                  float* out_r, float* out_g, float* out_b, int width, int height) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     if (col < width && row < height) {
         int idx = row * width + col;
-        if (mask[idx] > 0.0f) {
-            channel[idx] = interp[idx];
-        }
+        float raw_val = (float)raw[idx];
+        out_g[idx] = (m_g[idx] > 0.0f) ? raw_val : i1[idx];
+        if (m_r[idx] > 0.0f) out_r[idx] = raw_val;
+        else if (m_gr[idx] > 0.0f) out_r[idx] = i2[idx];
+        else if (m_gb[idx] > 0.0f) out_r[idx] = i3[idx];
+        else out_r[idx] = i4[idx];
+        if (m_b[idx] > 0.0f) out_b[idx] = raw_val;
+        else if (m_gb[idx] > 0.0f) out_b[idx] = i2[idx];
+        else if (m_gr[idx] > 0.0f) out_b[idx] = i3[idx];
+        else out_b[idx] = i4[idx];
     }
 }
 
@@ -178,7 +158,7 @@ int main() {
    int width = 3328, height = 2464;
    int bit_depth = 10;
    float gain = 5.0f, r_gain = 1.2f, b_gain = 1.35f;
-   std::string input_path = "/content/file.raw";
+   std::string input_path = "content/file.raw";
    size_t img_size = width * height;
    float total_time = 0.0;
 
@@ -256,30 +236,12 @@ int main() {
         normalizeKernel<<<grid, block>>>(d_raw, width, height, 6);
 
         // 9.2 Demosaic The Image
-        maskRKernel<<<grid, block>>>(d_mask_r, width, height);
-        maskGrKernel<<<grid, block>>>(d_mask_gr, width, height);
-        maskGbKernel<<<grid, block>>>(d_mask_gb, width, height);
-        maskBKernel<<<grid, block>>>(d_mask_b, width, height);
-        maskGCombinedKernel<<<grid, block>>>(d_mask_g, width, height);
-          
-        multiplyKernel<<<grid, block>>>(d_raw, d_mask_r, d_r, width, height);
-        multiplyKernel<<<grid, block>>>(d_raw, d_mask_g, d_g, width, height);
-        multiplyKernel<<<grid, block>>>(d_raw, d_mask_b, d_b, width, height);
+        generateMasksKernel<<<grid, block>>>(d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, width, height);
 
-        convolve5x5Kernel<<<grid, block>>>(d_raw, df1, d_i1, width, height);
-        whereKernel<<<grid, block>>>(d_mask_r, d_i1, d_g, width, height);
-        whereKernel<<<grid, block>>>(d_mask_b, d_i1, d_g, width, height);
+        mergedConvolveKernel<<<grid, block>>>(d_raw, df1, df2, df3, df4, d_i1, d_i2, d_i3, d_i4, width, height);
 
-        convolve5x5Kernel<<<grid, block>>>(d_raw, df2, d_i1, width, height);
-        convolve5x5Kernel<<<grid, block>>>(d_raw, df3, d_i2, width, height);
-        convolve5x5Kernel<<<grid, block>>>(d_raw, df4, d_i3, width, height);
-
-        whereKernel<<<grid, block>>>(d_mask_gr, d_i1, d_r, width, height);
-        whereKernel<<<grid, block>>>(d_mask_gb, d_i2, d_r, width, height);
-        whereKernel<<<grid, block>>>(d_mask_b, d_i3, d_r, width, height);
-        whereKernel<<<grid, block>>>(d_mask_gb, d_i1, d_b, width, height);
-        whereKernel<<<grid, block>>>(d_mask_gr, d_i2, d_b, width, height);
-        whereKernel<<<grid, block>>>(d_mask_r, d_i3, d_b, width, height);
+        mergedWhereKernel<<<grid, block>>>(d_raw, d_mask_r, d_mask_gr, d_mask_gb, d_mask_b, d_mask_g, 
+                                          d_i1, d_i2, d_i3, d_i4, d_r, d_g, d_b, width, height);
 
         // 9.3 Apply Gains And Clip
         applyGainAndSaveKernel<<<grid, block>>>(d_r, d_g, d_b, d_out_img, gain, r_gain, b_gain, width, height, bit_depth);
