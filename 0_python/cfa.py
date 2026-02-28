@@ -167,10 +167,10 @@ def main():
         "bit_depth": 10,
         "width": 3328,
         "height": 2464,
-        "raw_file": "file.raw",
+        "raw_file": "0_python/file.raw",
         "output_file": "demosaic_python.png",
-        "gain": 5.0,
-        "r_gain": 1.2,
+        "gain": 4.5,
+        "r_gain": 1.32,
         "b_gain": 1.4,
         "shift_bits": 6
     }
